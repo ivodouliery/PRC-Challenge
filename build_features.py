@@ -21,7 +21,7 @@ FILE_OUTPUT_TR      = "data/processed/X_train_final.parquet"
 
 # --- CONFIGURATION RANK (SOUMISSION) ---
 # /!\ ATTENTION : Vérifiez le nom exact du dossier contenant les prc de test sur votre disque
-DIR_PRC_RANK        = "data/raw/flights_test"         # Dossier des PRC de test (ou flights_rank)
+DIR_PRC_RANK        = "data/raw/flights_rank"         # Dossier des PRC de test (ou flights_rank)
 FILE_FLIGHTLIST_RK  = "data/raw/flightlist_rank.parquet"
 FILE_TARGET_RK      = "data/raw/fuel_rank_submission.parquet"
 FILE_OUTPUT_RK      = "data/processed/X_test_final.parquet"
