@@ -103,11 +103,27 @@ def process_single_file(f_path, df_target, flight_ac_map):
                         start_alt = seg['altitude'].iloc[0]
                         end_alt = seg['altitude'].iloc[-1]
 
+                    # --- FEATURES AVANCÉES (PHYSIQUE) ---
+                    # 1. Proxy d'Énergie Cinétique/Travail (Distance * Vitesse)
+                    # Un vol rapide sur longue distance demande exponentiellement plus d'énergie
+                    energy_proxy = seg['step_dist'].sum() * seg['groundspeed'].mean()
+                    
+                    # 2. Facteur de Montée (Climb Cost)
+                    # Monter prend du temps et de l'énergie. 
+                    # Si delta_alt est positif et durée longue = grosse conso.
+                    climb_factor = (end_alt - start_alt) * duration
+                    
+                    # 3. Efficacité Verticale
+                    # Vitesse verticale moyenne pondérée par l'altitude moyenne
+                    # (Monter à haute altitude est plus dur qu'en basse altitude)
+                    vert_efficiency = seg['vertical_rate'].mean() * seg['altitude'].mean()
+
                     feat = {
                         'flight_id': fid,
                         'aircraft_type': flight_ac_map.get(fid, 'Unknown'),
                         'start': row['start'],
                         'end': row['end'],
+                        # Features de base
                         'duration': duration,
                         'distance_km': seg['step_dist'].sum(),
                         'groundspeed_mean': seg['groundspeed'].mean(),
@@ -119,6 +135,11 @@ def process_single_file(f_path, df_target, flight_ac_map):
                         'cos_track_mean': seg['cos_track'].mean(),
                         'latitude_mean': seg['latitude'].mean(),
                         'n_points': len(seg),
+                        # --- NOUVELLES FEATURES ---
+                        'energy_proxy': energy_proxy,
+                        'climb_factor': climb_factor,
+                        'vert_efficiency': vert_efficiency,
+                        # Cible
                         'fuel_kg': row.get('fuel_kg', np.nan)
                     }
                     local_features.append(feat)
