@@ -78,19 +78,13 @@ def get_acropole():
     global _acropole_estimator
     if _acropole_estimator is None:
         try:
-            # --- MODIFICATION DEBUT ---
-            import warnings
-            # On crée un contexte "silencieux" juste pour cet import
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=UserWarning)
-                from acropole import FuelEstimator
-            # --- MODIFICATION FIN ---
-            
+            from acropole import FuelEstimator
             _acropole_estimator = FuelEstimator()
         except ImportError:
             print("WARNING: ACROPOLE non installé, fallback vers OpenAP")
             _acropole_estimator = False
     return _acropole_estimator
+
 
 def get_openap_fuelflow(typecode):
     """Lazy loading des FuelFlow OpenAP par type."""
@@ -174,13 +168,24 @@ def estimate_fuel_acropole(df):
         # Préparer le DataFrame pour ACROPOLE
         input_df = df[['typecode', 'groundspeed', 'altitude', 'vertical_rate']].copy()
         
+        # IMPORTANT: Interpoler les NaN résiduels dans groundspeed et vertical_rate
+        # Ces NaN peuvent exister si le gap temporel était > 5s lors du nettoyage
+        input_df['groundspeed'] = input_df['groundspeed'].interpolate(method='linear', limit_direction='both')
+        input_df['vertical_rate'] = input_df['vertical_rate'].interpolate(method='linear', limit_direction='both')
+        input_df['altitude'] = input_df['altitude'].interpolate(method='linear', limit_direction='both')
+        
+        # Remplir les NaN restants (début/fin) avec ffill/bfill
+        input_df['groundspeed'] = input_df['groundspeed'].ffill().bfill()
+        input_df['vertical_rate'] = input_df['vertical_rate'].fillna(0)  # 0 = vol en palier
+        input_df['altitude'] = input_df['altitude'].ffill().bfill()
+        
         # Créer la colonne airspeed: TAS si disponible, sinon GS
         if 'airspeed' in df.columns:
-            # airspeed = TAS (ACARS) où disponible, sinon groundspeed
-            input_df['airspeed'] = df['airspeed'].fillna(df['groundspeed'])
+            # airspeed = TAS (ACARS) où disponible, sinon groundspeed interpolé
+            input_df['airspeed'] = df['airspeed'].fillna(input_df['groundspeed'])
         else:
             # Pas de TAS disponible, ACROPOLE utilisera groundspeed par défaut
-            input_df['airspeed'] = df['groundspeed']
+            input_df['airspeed'] = input_df['groundspeed']
         
         # Estimer avec airspeed
         result = fe.estimate(
@@ -198,6 +203,9 @@ def estimate_fuel_acropole(df):
         # Fallback sans airspeed
         try:
             input_df = df[['typecode', 'groundspeed', 'altitude', 'vertical_rate']].copy()
+            input_df['groundspeed'] = input_df['groundspeed'].interpolate(method='linear').ffill().bfill()
+            input_df['vertical_rate'] = input_df['vertical_rate'].interpolate(method='linear').fillna(0)
+            input_df['altitude'] = input_df['altitude'].interpolate(method='linear').ffill().bfill()
             result = fe.estimate(input_df)
             return result['fuel_flow'].values
         except:
@@ -249,10 +257,17 @@ def estimate_fuel_openap_vectorized(df, typecode, estimated_mass=None):
                 mass0 = mtow * TYPICAL_MASS_RATIO
                 mass_source = 'fallback_85pct'
         
-        # Données de vol
-        tas = df['groundspeed'].fillna(0).values
-        alt = df['altitude'].fillna(0).values
-        vs = df['vertical_rate'].fillna(0).values if 'vertical_rate' in df.columns else np.zeros(len(df))
+        # Données de vol - interpoler les NaN plutôt que mettre 0
+        tas = df['groundspeed'].interpolate(method='linear').ffill().bfill().values
+        alt = df['altitude'].interpolate(method='linear').ffill().bfill().values
+        vs = df['vertical_rate'].interpolate(method='linear').fillna(0).values if 'vertical_rate' in df.columns else np.zeros(len(df))
+        
+        # Si airspeed (TAS ACARS) est disponible, l'utiliser en croisière
+        if 'airspeed' in df.columns:
+            airspeed = df['airspeed'].values
+            # Remplacer tas par airspeed là où disponible
+            mask = ~np.isnan(airspeed)
+            tas[mask] = airspeed[mask]
         
         # dt = time step en secondes (bfill pour le premier point)
         dt = df['timestamp'].diff().bfill().dt.total_seconds().values
@@ -476,6 +491,18 @@ def process_single_flight(args):
         traj_df = pd.read_parquet(traj_path)
         traj_df = traj_df.sort_values('timestamp').reset_index(drop=True)
         
+        # --- INTERPOLER LES DONNÉES MANQUANTES ---
+        # Certaines lignes (ACARS) n'ont pas groundspeed, vertical_rate, track
+        # On les interpole depuis les points ADS-B voisins
+        for col in ['groundspeed', 'altitude', 'vertical_rate', 'track']:
+            if col in traj_df.columns:
+                traj_df[col] = traj_df[col].interpolate(method='linear', limit_direction='both')
+                traj_df[col] = traj_df[col].ffill().bfill()
+        
+        # vertical_rate : NaN restants → 0 (vol en palier)
+        if 'vertical_rate' in traj_df.columns:
+            traj_df['vertical_rate'] = traj_df['vertical_rate'].fillna(0)
+        
         # --- Estimer le fuel flow ---
         mass_estimated = np.nan
         mass_source = 'none'
@@ -582,6 +609,83 @@ def _init_worker():
     warnings.filterwarnings('ignore')
 
 
+def save_flight_checkpoint(flight_id, features_list, checkpoint_dir):
+    """Sauvegarde les features d'un vol dans un fichier checkpoint."""
+    if not features_list:
+        return
+    checkpoint_path = Path(checkpoint_dir) / f"features_{flight_id}.parquet"
+    df = pd.DataFrame(features_list)
+    df.to_parquet(checkpoint_path, index=False)
+
+
+def process_and_save(args_with_checkpoint):
+    """Wrapper qui traite un vol et sauvegarde immédiatement."""
+    task, checkpoint_dir = args_with_checkpoint
+    flight_id = task[0]
+    
+    # Traiter le vol
+    features_list = process_single_flight(task)
+    
+    # Sauvegarder immédiatement
+    if features_list:
+        save_flight_checkpoint(flight_id, features_list, checkpoint_dir)
+    
+    return flight_id, len(features_list)
+
+
+def get_completed_flights(checkpoint_dir):
+    """Retourne l'ensemble des flight_id déjà traités."""
+    checkpoint_path = Path(checkpoint_dir)
+    if not checkpoint_path.exists():
+        return set()
+    
+    completed = set()
+    for f in checkpoint_path.glob("features_*.parquet"):
+        # Extraire flight_id du nom: features_prc770870642.parquet -> prc770870642
+        flight_id = f.stem.replace("features_", "")
+        completed.add(flight_id)
+    
+    return completed
+
+
+def concat_checkpoints(checkpoint_dir, output_path):
+    """Concatène tous les fichiers checkpoint en un seul fichier."""
+    checkpoint_path = Path(checkpoint_dir)
+    
+    all_files = list(checkpoint_path.glob("features_*.parquet"))
+    if not all_files:
+        print("Aucun fichier checkpoint trouvé!")
+        return None
+    
+    print(f"Concaténation de {len(all_files)} fichiers...")
+    
+    dfs = []
+    for f in tqdm(all_files, desc="Lecture"):
+        try:
+            df = pd.read_parquet(f)
+            dfs.append(df)
+        except Exception as e:
+            print(f"  Erreur lecture {f.name}: {e}")
+    
+    if not dfs:
+        return None
+    
+    features_df = pd.concat(dfs, ignore_index=True)
+    
+    # S'assurer que idx est bien typé
+    if 'idx' in features_df.columns:
+        features_df['idx'] = features_df['idx'].astype(int)
+    
+    # Trier par flight_id et idx
+    if 'flight_id' in features_df.columns and 'idx' in features_df.columns:
+        features_df = features_df.sort_values(['flight_id', 'idx']).reset_index(drop=True)
+    
+    # Sauvegarder
+    features_df.to_parquet(output_path, index=False)
+    
+    return features_df
+
+
 def main():
     parser = argparse.ArgumentParser(description='Feature Engineering PRC Challenge')
     parser.add_argument('--trajectories', required=True, help='Dossier des fichiers trajectoire (prc*.parquet)')
@@ -592,12 +696,41 @@ def main():
     parser.add_argument('--no-parallel', action='store_true', help='Désactiver le multiprocessing')
     parser.add_argument('--max-flights', type=int, default=None, help='Limite de vols (pour test)')
     
+    # Nouvelles options pour checkpoint/reprise
+    parser.add_argument('--checkpoint-dir', default=None, 
+                        help='Dossier pour sauvegarder les checkpoints (1 fichier par vol)')
+    parser.add_argument('--resume', action='store_true',
+                        help='Reprendre: skip les vols déjà dans checkpoint-dir')
+    parser.add_argument('--concat-only', action='store_true',
+                        help='Ne pas traiter, juste concaténer les checkpoints existants')
+    
     args = parser.parse_args()
     
     print("=" * 60)
     print("FEATURE ENGINEERING - PRC Data Challenge 2025")
     print("=" * 60)
     print(f"Workers: {args.workers}")
+    
+    # --- Configurer checkpoint ---
+    if args.checkpoint_dir:
+        checkpoint_dir = Path(args.checkpoint_dir)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Checkpoint dir: {checkpoint_dir}")
+    else:
+        # Créer un dossier temporaire à côté du fichier output
+        checkpoint_dir = Path(args.output).parent / "checkpoints_temp"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Checkpoint dir (auto): {checkpoint_dir}")
+    
+    # --- Mode concat-only ---
+    if args.concat_only:
+        print(f"\nMode CONCAT-ONLY: concaténation des checkpoints...")
+        features_df = concat_checkpoints(checkpoint_dir, args.output)
+        if features_df is not None:
+            print(f"\nSauvegardé: {args.output}")
+            print(f"Segments: {len(features_df)}")
+            print(f"Taille: {os.path.getsize(args.output) / 1024**2:.1f} Mo")
+        return
     
     # --- Charger les métadonnées ---
     print(f"\nChargement flightlist: {args.flightlist}")
@@ -612,6 +745,12 @@ def main():
     # Afficher les colonnes pour diagnostic
     print(f"  Colonnes fuel: {fuel_df.columns.tolist()}")
     
+    # --- Vérifier les vols déjà traités (mode resume) ---
+    completed_flights = set()
+    if args.resume:
+        completed_flights = get_completed_flights(checkpoint_dir)
+        print(f"\nMode RESUME: {len(completed_flights)} vols déjà traités")
+    
     # --- Préparer les tâches ---
     trajectories_dir = Path(args.trajectories)
     
@@ -623,8 +762,14 @@ def main():
     
     tasks = []
     missing_traj = 0
+    skipped_completed = 0
     
     for flight_id, segments in segments_by_flight:
+        # Skip si déjà traité (mode resume)
+        if flight_id in completed_flights:
+            skipped_completed += 1
+            continue
+        
         # Récupérer les infos du vol
         flight_info = flightlist_dict.get(flight_id, {})
         typecode = flight_info.get('aircraft_type', 'UNKNOWN')
@@ -640,10 +785,18 @@ def main():
     
     print(f"\nTâches préparées: {len(tasks)}")
     print(f"Trajectoires manquantes: {missing_traj}")
+    if args.resume:
+        print(f"Vols skippés (déjà traités): {skipped_completed}")
     
     if args.max_flights:
         tasks = tasks[:args.max_flights]
         print(f"Limité à {args.max_flights} vols")
+    
+    if len(tasks) == 0:
+        print("\nAucun vol à traiter!")
+        if args.resume and completed_flights:
+            print("Tous les vols sont déjà traités. Utilisez --concat-only pour concaténer.")
+        return
     
     # --- Statistiques des types ---
     type_counts = {}
@@ -659,43 +812,52 @@ def main():
     print(f"  OpenAP: {openap_count} vols ({openap_count/len(tasks)*100:.1f}%)")
     print(f"  Non supporté: {unknown_count} vols ({unknown_count/len(tasks)*100:.1f}%)")
     
-    # --- Traitement parallèle ---
+    # --- Traitement avec sauvegarde checkpoint ---
     print(f"\nTraitement en cours avec {args.workers} workers...")
+    print(f"Chaque vol est sauvegardé dans: {checkpoint_dir}/")
+    print("(Vous pouvez interrompre avec Ctrl+C et reprendre avec --resume)")
     
-    all_features = []
+    # Préparer les tâches avec checkpoint_dir
+    tasks_with_checkpoint = [(task, str(checkpoint_dir)) for task in tasks]
     
-    if args.no_parallel:
-        # Mode séquentiel (debug)
-        print("Mode séquentiel (--no-parallel)")
-        results = []
-        for task in tqdm(tasks, desc="Vols"):
-            result = process_single_flight(task)
-            results.append(result)
-    else:
-        # Mode parallèle avec initialisation des workers
-        with Pool(processes=args.workers, initializer=_init_worker) as pool:
-            results = list(tqdm(
-                pool.imap_unordered(process_single_flight, tasks),
-                total=len(tasks),
-                desc="Vols"
-            ))
+    n_processed = 0
+    n_segments = 0
     
-    # Aplatir les résultats
-    for flight_results in results:
-        all_features.extend(flight_results)
+    try:
+        if args.no_parallel:
+            # Mode séquentiel (debug)
+            print("Mode séquentiel (--no-parallel)")
+            for task_cp in tqdm(tasks_with_checkpoint, desc="Vols"):
+                flight_id, n_seg = process_and_save(task_cp)
+                n_processed += 1
+                n_segments += n_seg
+        else:
+            # Mode parallèle avec initialisation des workers
+            with Pool(processes=args.workers, initializer=_init_worker) as pool:
+                for flight_id, n_seg in tqdm(
+                    pool.imap_unordered(process_and_save, tasks_with_checkpoint),
+                    total=len(tasks_with_checkpoint),
+                    desc="Vols"
+                ):
+                    n_processed += 1
+                    n_segments += n_seg
     
-    print(f"\nFeatures calculées: {len(all_features)}")
+    except KeyboardInterrupt:
+        print(f"\n\n⚠️  INTERRUPTION - {n_processed} vols traités")
+        print(f"Pour reprendre: ajoutez --resume")
+        print(f"Pour concaténer: ajoutez --concat-only")
+        return
     
-    # --- Créer le DataFrame final ---
-    features_df = pd.DataFrame(all_features)
+    print(f"\nVols traités: {n_processed}")
+    print(f"Segments calculés: {n_segments}")
     
-    # S'assurer que idx est présent et bien typé
-    if 'idx' in features_df.columns:
-        features_df['idx'] = features_df['idx'].astype(int)
+    # --- Concaténer les checkpoints ---
+    print(f"\nConcaténation des checkpoints...")
+    features_df = concat_checkpoints(checkpoint_dir, args.output)
     
-    # --- Sauvegarder ---
-    print(f"\nSauvegarde: {args.output}")
-    features_df.to_parquet(args.output, index=False)
+    if features_df is None:
+        print("Erreur: aucune feature à concaténer")
+        return
     
     # --- Résumé ---
     print(f"\n{'=' * 60}")
@@ -727,6 +889,11 @@ def main():
     
     print("\nAperçu:")
     print(features_df.head(10))
+    
+    # Info sur les checkpoints
+    n_checkpoints = len(list(checkpoint_dir.glob("features_*.parquet")))
+    print(f"\n💾 Checkpoints conservés: {n_checkpoints} fichiers dans {checkpoint_dir}/")
+    print("   (Supprimez ce dossier manuellement si vous n'en avez plus besoin)")
 
 
 if __name__ == "__main__":
