@@ -11,8 +11,8 @@ Opérations:
 
 Usage:
     python clean_trajectories.py \
-        --input /path/to/raw_trajectories/ \
-        --output /path/to/clean_trajectories/ \
+        --input prc_data/flights_train/ \
+        --output data/clean_flights_train/ \
         --workers 8
 """
 
