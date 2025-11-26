@@ -78,13 +78,19 @@ def get_acropole():
     global _acropole_estimator
     if _acropole_estimator is None:
         try:
-            from acropole import FuelEstimator
+            # --- MODIFICATION DEBUT ---
+            import warnings
+            # On crée un contexte "silencieux" juste pour cet import
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning)
+                from acropole import FuelEstimator
+            # --- MODIFICATION FIN ---
+            
             _acropole_estimator = FuelEstimator()
         except ImportError:
             print("WARNING: ACROPOLE non installé, fallback vers OpenAP")
             _acropole_estimator = False
     return _acropole_estimator
-
 
 def get_openap_fuelflow(typecode):
     """Lazy loading des FuelFlow OpenAP par type."""
