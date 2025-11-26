@@ -1,8 +1,6 @@
 .DS_Store
 __pycache__/
 .env
-data/raw/
-data/processed/
 data/
 prc_data/
 team_likable_jelly/
