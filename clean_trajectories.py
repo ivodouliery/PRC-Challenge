@@ -14,6 +14,11 @@ Usage:
         --input prc_data/flights_train/ \
         --output data/clean_flights_train/ \
         --workers 8
+        
+    python clean_trajectories.py \
+        --input prc_data/flights_rank/ \
+        --output data/clean_flights_rank/ \
+        --workers 8
 """
 
 import argparse
@@ -195,6 +200,10 @@ def extract_acars_tas(df):
     
     tas_values = []
     
+    # Préparer l'interpolation d'altitude sur tout le dataframe une seule fois
+    # On crée une série d'altitude interpolée pour tout le vol
+    df_alt_interp = df['altitude'].interpolate(method='linear', limit_direction='both')
+    
     for idx, row in acars_df.iterrows():
         timestamp = row['timestamp']
         tas = None
@@ -203,31 +212,29 @@ def extract_acars_tas(df):
         if 'TAS' in df.columns and pd.notna(row.get('TAS')):
             tas = row['TAS']
         
-        # 2. Mach disponible → convertir
-        elif 'mach' in df.columns and pd.notna(row.get('mach')):
-            mach = row['mach']
-            
+        # Si pas de TAS, on a besoin de l'altitude pour convertir Mach/CAS
+        if tas is None:
             # Récupérer l'altitude (de la ligne ACARS ou interpolée)
             if pd.notna(row.get('altitude')):
                 alt = row['altitude']
             else:
-                # Interpoler l'altitude depuis les lignes ADS-B proches
-                alt = _interpolate_altitude_at_timestamp(df, timestamp)
+                # Utiliser l'altitude interpolée à cet index
+                alt = df_alt_interp.loc[idx]
+                
+                # Si toujours NaN (cas rare), essayer d'interpoler par timestamp
+                if pd.isna(alt):
+                    alt = _interpolate_altitude_at_timestamp(df, timestamp)
             
             if alt is not None and alt > 0:
-                tas = mach_to_tas(mach, alt)
-        
-        # 3. CAS disponible → convertir
-        elif 'CAS' in df.columns and pd.notna(row.get('CAS')):
-            cas = row['CAS']
-            
-            if pd.notna(row.get('altitude')):
-                alt = row['altitude']
-            else:
-                alt = _interpolate_altitude_at_timestamp(df, timestamp)
-            
-            if alt is not None and alt > 0:
-                tas = cas_to_tas(cas, alt)
+                # 2. Mach disponible → convertir
+                if 'mach' in df.columns and pd.notna(row.get('mach')):
+                    mach = row['mach']
+                    tas = mach_to_tas(mach, alt)
+                
+                # 3. CAS disponible → convertir
+                elif 'CAS' in df.columns and pd.notna(row.get('CAS')):
+                    cas = row['CAS']
+                    tas = cas_to_tas(cas, alt)
         
         if tas is not None and np.isfinite(tas) and 100 < tas < 600:
             tas_values.append((timestamp, float(tas)))
@@ -236,7 +243,7 @@ def extract_acars_tas(df):
     
     # Calculer le TAS médian en croisière (points à haute altitude)
     if tas_values:
-        # Filtrer les points probablement en croisière (TAS > 400 kt typique)
+        # Filtrer les points probablement en croisière (TAS > 350 kt typique)
         cruise_tas = [t for _, t in tas_values if t > 350]
         if cruise_tas:
             result['cruise_tas_median'] = float(np.median(cruise_tas))
