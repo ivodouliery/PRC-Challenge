@@ -1,6 +1,6 @@
 # ✈️ PRC 2025 Challenge - Fuel Prediction
 
-**Performance:** RMSE ~224 (Top 10) 🏆  
+**Performance:** RMSE ~224 (Top 8) 🏆  
 **Goal:** Predict aircraft fuel consumption based on trajectory data.
 
 ## 📋 Overview
@@ -63,7 +63,10 @@ python train_blend.py
 *   **Outlier Removal:** Filters points with unrealistic altitudes or speeds.
 *   **Interpolation:** Fills small gaps (up to 60s) in trajectory data to maintain continuity.
 *   **Flight Phase Detection:** Uses OpenAP or a fallback heuristic to label phases (CLIMB, CRUISE, DESCENT).
-*   **Airspeed Calculation:** Derives True Airspeed (TAS) and Mach number from ground speed and altitude if not available.
+*   **Airspeed Calculation (TAS):**
+    *   **Challenge:** Downloading historical weather data (GRIB files) to calculate True Airspeed from Ground Speed was too heavy (terabytes of data) and slow for the competition timeline.
+    *   **Solution:** We leverage **ACARS** messages embedded in the trajectory data. These messages often contain direct readings of TAS, Mach, or CAS (Calibrated Airspeed).
+    *   **Implementation:** We extract these sparse ACARS points and interpolate them to the rest of the trajectory, using altitude to convert Mach/CAS to TAS where necessary. This provides a "ground truth" airspeed without external weather dependencies.
 
 ### 2. Feature Engineering (`feature_engineering.py` & `data_utils.py`)
 
@@ -94,9 +97,14 @@ To capture the sequential nature of flight, we add context from neighboring segm
 *   `next_phase`: The flight phase of the *next* segment (anticipation).
 
 #### E. Physics-Based Features
-*   **Mass Estimation:** 
-    *   Uses `mass_estimator.py` to solve the inverse flight dynamics problem (finding the initial mass that minimizes fuel error on training data).
-    *   Fallback: 85% of MTOW (Maximum Takeoff Weight) if the model is unavailable.
+*   **Mass Estimation (Inverse Physics):**
+    *   **Problem:** Aircraft mass is a critical parameter for fuel consumption but is not provided in the test set.
+    *   **Solution:** We solve the "inverse problem" on the training set. Since we know the actual fuel consumption, we find the initial mass that minimizes the error between the theoretical fuel flow (calculated via OpenAP) and the ground truth.
+    *   **Implementation:**
+        1.  For each flight in the training set, we use `scipy.optimize.minimize_scalar` to find the optimal `mass0`.
+        2.  We train a regression model (`mass_model.pkl`) for each aircraft type: `Estimated Mass = f(Flight Duration)`.
+        3.  For the test set, we predict the initial mass using this duration-based model.
+    *   **Fallback:** If the model is unavailable for a specific type, we default to 85% of MTOW.
 *   **Fuel Flow Models:**
     *   `fuel_flow_acropole`: Estimated fuel flow using the Acropole model (for supported Airbus/Boeing aircraft).
     *   `fuel_flow_openap`: Estimated fuel flow using the OpenAP library (fallback for other types).
@@ -123,12 +131,17 @@ Processing large datasets can be unstable due to memory leaks or specific corrup
 
 ## 📈 Results
 
-| Model | RMSE (CV) |
-|-------|-----------|
-| XGBoost | ~246.8 |
-| LightGBM | ~245.4 |
-| CatBoost | ~244.9 |
-| **Ensemble** | **~224.0** |
+| Model | RMSE (CV) | RMSE (Rank/LB) |
+|-------|-----------|----------------|
+| XGBoost | ~246.8 | - |
+| LightGBM | ~245.4 | - |
+| CatBoost | ~244.9 | - |
+| **Ensemble** | **~241.0** | **~224.0** |
+
+**Ensemble Weights:**
+*   **CatBoost:** 64.1%
+*   **LightGBM:** 19.9%
+*   **XGBoost:** 16.0%
 
 ## 🔮 Future Work (V2)
 *   **Weather Integration:** Incorporate wind and temperature data using `fastmeteo` to improve ground speed and fuel flow calculations.
