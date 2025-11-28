@@ -11,7 +11,7 @@ This repository contains the complete pipeline to process flight data, generate 
 *   **Robust Data Cleaning:** Automatic handling of "ghost" segments (missing trajectory data) and physical outlier removal.
 *   **Context-Aware Features:** Implementation of Lag/Lead features to capture flight dynamics (climb history, next phase anticipation).
 *   **Ensemble Learning:** Weighted blending of XGBoost, LightGBM, and CatBoost optimized via `scipy.minimize`.
-*   **Physics-Informed (V2):** Includes an experimental mass estimator (`mass_estimator.py`) based on inverse flight dynamics.
+*   **Physics-Informed:** Includes an experimental mass estimator (`mass_estimator.py`) based on inverse flight dynamics.
 
 ## 🛠️ Project Structure
 
@@ -23,7 +23,7 @@ This repository contains the complete pipeline to process flight data, generate 
 ├── train_blend.py           # Step 4: Final training, blending, and submission generation
 ├── run_robust.py            # Utility: Robust runner for long processes (auto-restart)
 ├── run_robust_rank.py       # Utility: Robust runner for the ranking dataset
-└── mass_estimator.py        # Experimental: Inverse physics for mass estimation (V2)
+└── mass_estimator.py        # Experimental: Inverse physics for mass estimation
 ```
 
 ## 🚀 Usage
