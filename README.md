@@ -144,4 +144,4 @@ Processing large datasets can be unstable due to memory leaks or specific corrup
 *   **XGBoost:** 16.0%
 
 ## 🔮 Future Work (V2)
-*   **Weather Integration:** Incorporate wind and temperature data using `fastmeteo` to improve ground speed and fuel flow calculations.
+*   **Weather Integration:** Incorporate wind and temperature data using `csdapi` to improve ground speed and fuel flow calculations.
