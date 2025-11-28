@@ -1,7 +1,15 @@
 .DS_Store
 __pycache__/
 .env
+.vscode/
 data/
 prc_data/
 team_likable_jelly/
 models/
+optuna_*.db
+run_robust*.py
+test.py
+test.ipynb
+inspect_tas_usage.py
+dataCleaning.ipynb
+analyze_features.py
