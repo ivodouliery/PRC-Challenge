@@ -62,6 +62,9 @@ python train_blend.py
 ### 1. Data Preprocessing (`clean_trajectories.py`)
 *   **Outlier Removal:** Filters points with unrealistic altitudes or speeds.
 *   **Interpolation:** Fills small gaps (up to 60s) in trajectory data to maintain continuity.
+
+![Trajectory Cleaning Example](/Users/ivodouliery/.gemini/antigravity/brain/b0d15d5c-8c6e-47a4-af6a-8af46d298d8e/cleaning_example.png)
+
 *   **Flight Phase Detection:** Uses OpenAP or a fallback heuristic to label phases (CLIMB, CRUISE, DESCENT).
 *   **Airspeed Calculation (TAS):**
     *   **Challenge:** Downloading historical weather data (GRIB files) to calculate True Airspeed from Ground Speed was too heavy (terabytes of data) and slow for the competition timeline.
