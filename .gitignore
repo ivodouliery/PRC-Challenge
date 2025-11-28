@@ -13,3 +13,5 @@ test.ipynb
 inspect_tas_usage.py
 dataCleaning.ipynb
 analyze_features.py
+*.pkl
+*.parquet
