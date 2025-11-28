@@ -5,7 +5,7 @@ __pycache__/
 data/
 prc_data/
 team_likable_jelly/
-models/
+
 optuna_*.db
 
 test.py
