@@ -74,12 +74,15 @@ To validate our TAS reconstruction, we compared it with TAS calculated using his
 *   **Blue (Weather Derived TAS):** TAS calculated using ERA5 wind data.
 *   **Red Points (ACARS):** Ground truth measurements from the aircraft.
 
-The strong correlation between our reconstructed TAS (Green) and the ERA5-derived TAS (Blue), and their alignment with ACARS points (Red), confirms the validity of our approach without needing heavy weather data in production.
+The strong correlation between our reconstructed TAS (Green) and the ERA5-derived TAS (Blue), and their alignment with ACARS points (Red), confirms the validity of our approach.
+
+> [!NOTE]
+> This comparison is provided as a **validation example only**. Due to the massive storage and RAM requirements (terabytes for global historical weather data), it is not feasible to download and process ERA5 data for the entire dataset. Our ACARS-based reconstruction offers a lightweight and accurate alternative.
 
 *   **Flight Phase Detection:** Uses OpenAP or a fallback heuristic to label phases (CLIMB, CRUISE, DESCENT).
 *   **Airspeed Calculation (TAS):**
     *   **Challenge:** Downloading historical weather data (GRIB files) to calculate True Airspeed from Ground Speed was too heavy (terabytes of data) and slow for the competition timeline.
-    *   **Solution:** We leverage **ACARS** messages embedded in the trajectory data. Although sparse (often only ~10 points for thousands of ADS-B points), a single ACARS point allows us to identify wind trends and accurately estimate TAS for the entire flight.
+    *   **Solution:** We leverage **ACARS** messages embedded in the trajectory data. Although sparse (often only ~10 points for thousands of ADS-B points), a single ACARS point allows us to identify wind trends and accurately estimate TAS for the cruise phase of the flight.
     *   **Implementation:** We extract these sparse ACARS points and interpolate them to the rest of the trajectory, using altitude to convert Mach/CAS to TAS where necessary. This provides a "ground truth" airspeed without external weather dependencies.
 
 ### 2. Feature Engineering (`feature_engineering.py` & `data_utils.py`)
