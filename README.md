@@ -20,7 +20,7 @@ The project relies on a robust stack of Python libraries for data processing, mo
 *   **Data Processing:** `pandas`, `numpy`, `scipy` (optimization & interpolation).
 *   **Machine Learning:** `xgboost`, `lightgbm`, `catboost` (Gradient Boosting Ensemble), `scikit-learn` (metrics).
 *   **Optimization:** `optuna` (Hyperparameter tuning).
-*   **Aviation Physics:** `openap` (Drag, Thrust, Fuel Flow models).
+*   **Aviation Physics:** `acropole` (Fuel flow models), `openap` (Drag, Thrust, Fuel Flow models).
 *   **Weather Validation:** `fastmeteo` (ERA5 data retrieval), `cdsapi`.
 *   **Visualization:** `matplotlib`, `seaborn`.
 
