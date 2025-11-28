@@ -23,7 +23,7 @@ def get_openap_model(typecode):
 
 def solve_mass_for_flight(flight_id, df, fuel_actual_kg):
     """
-    Trouve la masse initiale qui minimise l'erreur entre fuel calculé et fuel réel.
+    Finds the initial mass that minimizes the error between calculated and actual fuel.
     """
     if len(df) < 2:
         return None
@@ -37,10 +37,10 @@ def solve_mass_for_flight(flight_id, df, fuel_actual_kg):
     mtow = ac_props.get('mtow', 75000)
     oew = ac_props.get('oew', mtow * 0.5)
     
-    # Préparer les données vectorisées
-    tas = df['groundspeed'].values # Approximation si TAS pas dispo
+    # Prepare vectorized data
+    tas = df['groundspeed'].values # Approximation if TAS not available
     if 'airspeed' in df.columns and df['airspeed'].notna().any():
-        # Utiliser airspeed là où dispo
+        # Use airspeed where available
         mask = df['airspeed'].notna()
         tas[mask] = df.loc[mask, 'airspeed'].values
         
@@ -50,37 +50,37 @@ def solve_mass_for_flight(flight_id, df, fuel_actual_kg):
     dt[0] = dt[1] if len(dt) > 1 else 1
     
     def calculate_fuel(mass0):
-        # Simulation vectorisée
-        # Note: Pour être précis, il faudrait recalculer la masse à chaque pas
-        # Mais pour l'optimisation, on peut faire une approximation ou une boucle rapide
+        # Vectorized simulation
+        # Note: To be precise, we should recalculate mass at each step
+        # But for optimization, we can use an approximation or a fast loop
         
-        # Approche vectorisée itérative (rapide)
+        # Iterative vectorized approach (fast)
         current_mass = mass0
         total_fuel = 0
         
-        # On fait une seule passe avec la masse moyenne estimée pour aller vite
-        # Ou mieux: on utilise la fonction enroute d'OpenAP qui est vectorisée
+        # We do a single pass with estimated average mass for speed
+        # Or better: use OpenAP's enroute function which is vectorized
         
-        # Pour l'optimisation, on va faire simple:
-        # On suppose que la masse diminue linéairement ou on fait une intégration simple
+        # For optimization, we keep it simple:
+        # Assume mass decreases linearly or do simple integration
         
-        # 1. Calculer FF avec masse constante (mass0)
+        # 1. Calculate FF with constant mass (mass0)
         ff = ff_model.enroute(mass=mass0, tas=tas, alt=alt, vs=vs).flatten()
         fuel_consumed = np.sum(ff * dt)
         
-        # 2. Raffinement: masse moyenne
+        # 2. Refinement: average mass
         mass_avg = mass0 - fuel_consumed / 2
         ff = ff_model.enroute(mass=mass_avg, tas=tas, alt=alt, vs=vs).flatten()
         fuel_final = np.sum(ff * dt)
         
         return fuel_final
 
-    # Fonction objective
+    # Objective function
     def objective(mass0):
         fuel_est = calculate_fuel(mass0)
         return abs(fuel_est - fuel_actual_kg)
     
-    # Optimisation scalaire bornée [OEW, MTOW]
+    # Bounded scalar optimization [OEW, MTOW]
     res = minimize_scalar(objective, bounds=(oew, mtow), method='bounded')
     
     if res.success:
@@ -93,16 +93,16 @@ def train_mass_model(fuel_path, flightlist_path, trajectories_dir, output_model_
     fuel_df = pd.read_parquet(fuel_path)
     flightlist = pd.read_parquet(flightlist_path)
     
-    # Mapper flight_id -> typecode, duration
+    # Map flight_id -> typecode, duration
     flight_meta = flightlist.set_index('flight_id')[['aircraft_type']].to_dict('index')
     
-    # Grouper fuel par vol (somme des segments)
+    # Group fuel by flight (sum of segments)
     flight_fuel = fuel_df.groupby('flight_id')['fuel_kg'].sum()
     
     results = []
     
-    # Sélectionner un échantillon pour l'entraînement (ex: 1000 vols ou tous)
-    # Pour avoir une bonne couverture (notamment B789), on prend tout ou un très grand nombre
+    # Select a sample for training (e.g., 1000 flights or all)
+    # To have good coverage (especially B789), we take all or a very large number
     sample_flights = flight_fuel.sample(n=min(12000, len(flight_fuel))).index
     
     print(f"Processing {len(sample_flights)} flights for mass inversion...")
@@ -114,29 +114,29 @@ def train_mass_model(fuel_path, flightlist_path, trajectories_dir, output_model_
         typecode = flight_meta[flight_id]['aircraft_type']
         fuel_kg = flight_fuel[flight_id]
         
-        # Charger trajectoire
+        # Load trajectory
         traj_path = Path(trajectories_dir) / f"{flight_id}.parquet"
         if not traj_path.exists():
             continue
             
         try:
             df = pd.read_parquet(traj_path)
-            # Nettoyage minimal si nécessaire (normalement déjà clean)
+            # Minimal cleaning if necessary (normally already clean)
             if 'groundspeed' not in df.columns: 
                 continue
                 
             df['typecode'] = typecode
             df = df.sort_values('timestamp')
             
-            # Résoudre masse
+            # Solve mass
             estimated_mass = solve_mass_for_flight(flight_id, df, fuel_kg)
             
             if estimated_mass:
-                # Calculer distance et durée
+                # Calculate distance and duration
                 dist = 0
                 if 'latitude' in df.columns:
                     # Approx distance
-                    pass # Pas besoin d'être précis pour l'instant
+                    pass # No need to be precise for now
                 
                 duration = (df['timestamp'].max() - df['timestamp'].min()).total_seconds()
                 
@@ -150,7 +150,7 @@ def train_mass_model(fuel_path, flightlist_path, trajectories_dir, output_model_
         except Exception as e:
             pass
 
-    # Créer le modèle (Lookup table par type + régression linéaire sur durée)
+    # Create model (Lookup table by type + linear regression on duration)
     print(f"Training model on {len(results)} samples...")
     train_df = pd.DataFrame(results)
     
@@ -158,14 +158,14 @@ def train_mass_model(fuel_path, flightlist_path, trajectories_dir, output_model_
     
     for typecode, group in train_df.groupby('typecode'):
         if len(group) < 5:
-            # Pas assez de données, utiliser moyenne simple ou ratio MTOW
+            # Not enough data, use simple mean or MTOW ratio
             model[typecode] = {
                 'method': 'mean',
                 'mass_mean': group['estimated_mass'].mean()
             }
         else:
-            # Régression linéaire simple: Mass = a * Duration + b
-            # Ou mieux: Mass = a * Duration + b (car plus on vole loin, plus on est lourd en fuel)
+            # Simple linear regression: Mass = a * Duration + b
+            # Or better: Mass = a * Duration + b (because the further we fly, the heavier the fuel load)
             coeffs = np.polyfit(group['duration'], group['estimated_mass'], 1)
             model[typecode] = {
                 'method': 'linear',
@@ -173,17 +173,17 @@ def train_mass_model(fuel_path, flightlist_path, trajectories_dir, output_model_
                 'intercept': coeffs[1]
             }
             
-    # Sauvegarder
+    # Save
     with open(output_model_path, 'wb') as f:
         pickle.dump(model, f)
         
     print(f"Model saved to {output_model_path}")
 
 if __name__ == "__main__":
-    # Chemins (à adapter selon l'environnement)
+    # Paths (adapt according to environment)
     train_mass_model(
         fuel_path='prc_data/fuel_train.parquet',
         flightlist_path='prc_data/flightlist_train.parquet',
-        trajectories_dir='data/clean_flights_train', # Utiliser les vrais fichiers clean
+        trajectories_dir='data/clean_flights_train', # Use real clean files
         output_model_path='data/mass_model.pkl'
     )

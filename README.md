@@ -22,6 +22,7 @@ This repository contains the complete pipeline to process flight data, generate 
 ├── optimize_infinity.py     # Step 3: Hyperparameter optimization (Optuna) for XGB/LGB/CatBoost
 ├── train_blend.py           # Step 4: Final training, blending, and submission generation
 ├── run_robust.py            # Utility: Robust runner for long processes (auto-restart)
+├── run_robust_rank.py       # Utility: Robust runner for the ranking dataset
 └── mass_estimator.py        # Experimental: Inverse physics for mass estimation (V2)
 ```
 
@@ -58,22 +59,39 @@ python train_blend.py
 
 ## 📊 Methodology
 
-1.  **Data Preprocessing:**
-    *   Missing duration imputation using theoretical time.
-    *   Filtering of physically impossible fuel flow (>20 kg/s).
-    *   Categorical encoding for Aircraft Type, Phase, etc.
+### 1. Data Preprocessing (`clean_trajectories.py`)
+*   **Outlier Removal:** Filters points with unrealistic altitudes or speeds.
+*   **Interpolation:** Fills small gaps (up to 60s) in trajectory data to maintain continuity.
+*   **Flight Phase Detection:** Uses OpenAP or a fallback heuristic to label phases (CLIMB, CRUISE, DESCENT).
+*   **Airspeed Calculation:** Derives True Airspeed (TAS) and Mach number from ground speed and altitude if not available.
 
-2.  **Feature Engineering:**
-    *   **Spatial:** Distance, Track change.
-    *   **Temporal:** Duration, Time since takeoff.
-    *   **Dynamics:** Vertical rate, Ground speed, Altitude (Mean/Min/Max/Std).
-    *   **Context (New):** Previous segment stats (`prev_alt_mean`, `prev_vrate_mean`) and Next Phase (`next_phase`).
+### 2. Feature Engineering (`feature_engineering.py` & `data_utils.py`)
+*   **Spatial:** Distance flown, track changes.
+*   **Temporal:** Duration, time since takeoff.
+*   **Dynamics:** Vertical rate, ground speed, altitude (Mean/Min/Max/Std).
+*   **Context (Lag/Lead):**
+    *   `prev_alt_mean`, `prev_vrate_mean`: Captures the state of the aircraft in the previous segment.
+    *   `next_phase`: Anticipates the next flight phase (e.g., transition from Cruise to Descent).
+*   **Physics-Based:** Estimates fuel flow using OpenAP and Acropole models as baseline features.
 
-3.  **Modeling:**
-    *   **XGBoost:** Histogram-based, optimized for speed/accuracy.
-    *   **LightGBM:** Leaf-wise growth, handles categories natively.
-    *   **CatBoost:** Symmetric trees, best for categorical data.
-    *   **Blending:** Linear combination of predictions weights optimized on Out-Of-Fold (OOF) predictions.
+### 3. Modeling Strategy (`optimize_infinity.py` & `train_blend.py`)
+We use an ensemble of three gradient boosting libraries to maximize performance and diversity:
+
+*   **XGBoost:** Configured with `hist` tree method for speed. Excellent for structured data.
+*   **LightGBM:** Uses leaf-wise growth. Very fast and handles categorical features natively.
+*   **CatBoost:** Uses symmetric trees and ordered boosting. Best performance on categorical data (Aircraft Type, Phase).
+
+**Optimization:**
+Hyperparameters (learning rate, depth, regularization) are optimized using **Optuna** with 5-fold GroupKFold cross-validation (grouped by `flight_id` to prevent leakage).
+
+**Blending:**
+The final predictions are a weighted average of the three models. The weights are optimized using `scipy.optimize.minimize` to minimize RMSE on the Out-Of-Fold (OOF) predictions.
+
+## 🛡️ Robustness (`run_robust.py`)
+Processing large datasets can be unstable due to memory leaks or specific corrupted files. The `run_robust.py` script:
+1.  Monitors the feature engineering process.
+2.  Automatically restarts the script if it crashes.
+3.  Identifies and blacklists flights that cause repeated crashes (`blacklist.txt`).
 
 ## 📈 Results
 
@@ -85,5 +103,5 @@ python train_blend.py
 | **Ensemble** | **~224.0** |
 
 ## 🔮 Future Work (V2)
-*   Integrate `mass_estimator.py` to estimate initial aircraft mass.
-*   Incorporate weather data (Wind/Temp) using `fastmeteo`.
+*   **Mass Estimation:** Integrate `mass_estimator.py` to estimate initial aircraft mass, which is a critical factor for fuel consumption.
+*   **Weather Integration:** Incorporate wind and temperature data using `fastmeteo` to improve ground speed and fuel flow calculations.
