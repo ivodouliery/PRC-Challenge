@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Feature Engineering pour le PRC Data Challenge 2025.
 
@@ -11,27 +10,59 @@ Multiprocessing avec 8 workers.
 
 Usage:
     python feature_engineering.py \
-        --trajectories /path/to/prc_files/ \
-        --flightlist flightlist_train.parquet \
-        --fuel fuel_train.parquet \
-        --output features_train.parquet \
+        --trajectories prc_data/flight_train \
+        --flightlist prc_data/flightlist_train.parquet \
+        --fuel prc_data/fuel_train.parquet \
+        --output data/features_train.parquet \
         --workers 8
 """
 
-import argparse
+# --- FIX CRASH MAC (CRITICAL) ---
+# Désactiver le GPU (Metal) AVANT tout import pour éviter les conflits avec multiprocessing
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1" # Pour TF standard
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+# Fix conflit Protobuf/PyArrow/TensorFlow (suggéré par le screenshot)
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+
+try:
+    import tensorflow as tf
+    # Cacher les GPU aux yeux de TF
+    tf.config.set_visible_devices([], 'GPU')
+except ImportError:
+    pass
+except Exception:
+    pass
+# --------------------------------
+
+import argparse
 import sys
 import warnings
 from pathlib import Path
 from functools import partial
+import multiprocessing as mp
 from multiprocessing import Pool, cpu_count
 from datetime import datetime
+
+# IMPORTANT: Utiliser 'spawn' au lieu de 'fork' pour éviter les segfaults
+# avec ACROPOLE après beaucoup de vols traités
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass  # Déjà configuré
 
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
 warnings.filterwarnings('ignore')
+# Ignorer spécifiquement les warnings pkg_resources qui polluent
+warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="pkg_resources")
+warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
+# Ignorer le warning A20N/A21N non supporté par Acropole (c'est normal, on fallback sur OpenAP)
+warnings.filterwarnings("ignore", message=".*Aircraft type .* flight_typecode not supported.*")
+os.environ["PYTHONWARNINGS"] = "ignore"
 
 # =============================================================================
 # CONSTANTES
@@ -78,10 +109,32 @@ def get_acropole():
     global _acropole_estimator
     if _acropole_estimator is None:
         try:
+            # Force usage of local Acropole (with warning fix)
+            import sys
+            local_acropole_path = os.path.join(os.getcwd(), 'Acropole')
+            if local_acropole_path not in sys.path:
+                sys.path.insert(0, local_acropole_path)
+
+            # --- FIX CRASH MAC ---
+            # Désactiver le GPU (Metal) pour éviter les conflits avec multiprocessing
+            import tensorflow as tf
+            try:
+                tf.config.set_visible_devices([], 'GPU')
+            except Exception:
+                pass
+            # ---------------------
+
+            import warnings
+            warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
+            warnings.filterwarnings("ignore", category=DeprecationWarning, module="pkg_resources")
+            
             from acropole import FuelEstimator
             _acropole_estimator = FuelEstimator()
-        except ImportError:
-            print("WARNING: ACROPOLE non installé, fallback vers OpenAP")
+        except ImportError as e:
+            print(f"WARNING: ACROPOLE non installé, fallback vers OpenAP. Error: {e}")
+            _acropole_estimator = False
+        except Exception as e:
+            print(f"WARNING: ACROPOLE erreur init: {e}")
             _acropole_estimator = False
     return _acropole_estimator
 
@@ -99,7 +152,7 @@ def get_openap_fuelflow(typecode):
             _openap_props[typecode] = ac
             
             # Créer l'estimateur
-            _openap_fuelflows[typecode] = FuelFlow(typecode)
+            _openap_fuelflows[typecode] = FuelFlow(typecode, use_synonym=True)
         except Exception as e:
             _openap_fuelflows[typecode] = None
             _openap_props[typecode] = None
@@ -179,6 +232,16 @@ def estimate_fuel_acropole(df):
         input_df['vertical_rate'] = input_df['vertical_rate'].fillna(0)  # 0 = vol en palier
         input_df['altitude'] = input_df['altitude'].ffill().bfill()
         
+        # CORRECTION: Filtrer les valeurs invalides qui causent des segfaults
+        # Altitude négative → 0 (au sol)
+        input_df.loc[input_df['altitude'] < 0, 'altitude'] = 0
+        # Groundspeed trop faible → minimum 50 kt
+        input_df.loc[input_df['groundspeed'] < 50, 'groundspeed'] = 50
+        # Groundspeed trop élevé → maximum 600 kt
+        input_df.loc[input_df['groundspeed'] > 600, 'groundspeed'] = 600
+        # Altitude trop élevée → maximum 45000 ft
+        input_df.loc[input_df['altitude'] > 45000, 'altitude'] = 45000
+        
         # Créer la colonne airspeed: TAS si disponible, sinon GS
         if 'airspeed' in df.columns:
             # airspeed = TAS (ACARS) où disponible, sinon groundspeed interpolé
@@ -186,15 +249,25 @@ def estimate_fuel_acropole(df):
         else:
             # Pas de TAS disponible, ACROPOLE utilisera groundspeed par défaut
             input_df['airspeed'] = input_df['groundspeed']
+            
+        # Créer la colonne second (temps en secondes depuis le début)
+        # Nécessaire pour que Acropole calcule les dérivées (accélérations)
+        if 'timestamp' in df.columns:
+            t0 = df['timestamp'].min()
+            input_df['second'] = (df['timestamp'] - t0).dt.total_seconds()
+        else:
+            # Fallback si pas de timestamp (ne devrait pas arriver)
+            input_df['second'] = np.arange(len(df))
         
-        # Estimer avec airspeed
+        # Estimer avec airspeed et second
         result = fe.estimate(
             input_df,
             typecode='typecode',
             groundspeed='groundspeed',
             altitude='altitude',
             vertical_rate='vertical_rate',
-            airspeed='airspeed'
+            airspeed='airspeed',
+            second='second'
         )
         
         return result['fuel_flow'].values
@@ -206,6 +279,13 @@ def estimate_fuel_acropole(df):
             input_df['groundspeed'] = input_df['groundspeed'].interpolate(method='linear').ffill().bfill()
             input_df['vertical_rate'] = input_df['vertical_rate'].interpolate(method='linear').fillna(0)
             input_df['altitude'] = input_df['altitude'].interpolate(method='linear').ffill().bfill()
+            
+            # Mêmes corrections
+            input_df.loc[input_df['altitude'] < 0, 'altitude'] = 0
+            input_df.loc[input_df['groundspeed'] < 50, 'groundspeed'] = 50
+            input_df.loc[input_df['groundspeed'] > 600, 'groundspeed'] = 600
+            input_df.loc[input_df['altitude'] > 45000, 'altitude'] = 45000
+            
             result = fe.estimate(input_df)
             return result['fuel_flow'].values
         except:
@@ -247,11 +327,30 @@ def estimate_fuel_openap_vectorized(df, typecode, estimated_mass=None):
             mass0 = estimated_mass
             mass_source = 'prc2024'
         else:
-            # Essayer d'estimer la masse avec la méthode PRC2024
-            mass0 = estimate_initial_mass(df, typecode)
+            # Essayer d'utiliser le modèle de masse entraîné
+            mass_model_path = Path('data/mass_model.pkl')
+            model_mass = None
             
-            if mass0 is not None and oew * 0.8 < mass0 < mtow * 1.1:
-                mass_source = 'prc2024'
+            if mass_model_path.exists():
+                try:
+                    import pickle
+                    with open(mass_model_path, 'rb') as f:
+                        mass_model = pickle.load(f)
+                    
+                    if typecode in mass_model:
+                        model_info = mass_model[typecode]
+                        duration = (df['timestamp'].max() - df['timestamp'].min()).total_seconds()
+                        
+                        if model_info['method'] == 'linear':
+                            model_mass = model_info['slope'] * duration + model_info['intercept']
+                        else:
+                            model_mass = model_info['mass_mean']
+                except:
+                    pass
+            
+            if model_mass is not None and oew * 0.8 < model_mass < mtow * 1.1:
+                mass0 = model_mass
+                mass_source = 'mass_model_v1'
             else:
                 # Fallback: 85% du MTOW
                 mass0 = mtow * TYPICAL_MASS_RATIO
@@ -503,21 +602,47 @@ def process_single_flight(args):
         if 'vertical_rate' in traj_df.columns:
             traj_df['vertical_rate'] = traj_df['vertical_rate'].fillna(0)
         
+        # --- CORRECTION DES VALEURS INVALIDES ---
+        # Altitudes négatives (erreurs ADS-B) → 0
+        if 'altitude' in traj_df.columns:
+            traj_df.loc[traj_df['altitude'] < 0, 'altitude'] = 0
+            traj_df.loc[traj_df['altitude'] > 50000, 'altitude'] = 50000
+        
+        # Groundspeed invalide
+        if 'groundspeed' in traj_df.columns:
+            traj_df.loc[traj_df['groundspeed'] < 0, 'groundspeed'] = 0
+            traj_df.loc[traj_df['groundspeed'] > 700, 'groundspeed'] = 700
+        
         # --- Estimer le fuel flow ---
         mass_estimated = np.nan
         mass_source = 'none'
         
+        # --- Estimer le fuel flow ---
+        mass_estimated = np.nan
+        mass_source = 'none'
+        fuel_calculated = False
+        
         if typecode in ACROPOLE_TYPES:
-            traj_df['fuel_flow'] = estimate_fuel_acropole(traj_df)
-            traj_df['fuel_source'] = 'acropole'
-            # ACROPOLE gère la masse internement, pas besoin d'estimer
-            mass_estimated = np.nan
-            mass_source = 'acropole_internal'
-        elif typecode in OPENAP_TYPES:
+            # Acropole needs typecode column
+            traj_df['typecode'] = typecode
+            acropole_result = estimate_fuel_acropole(traj_df)
+            # Check if we got valid results (not all NaNs)
+            if not np.all(np.isnan(acropole_result)):
+                traj_df['fuel_flow'] = acropole_result
+                traj_df['fuel_source'] = 'acropole'
+                # ACROPOLE gère la masse internement, pas besoin d'estimer
+                mass_estimated = np.nan
+                mass_source = 'acropole_internal'
+                fuel_calculated = True
+        
+        # Fallback to OpenAP if Acropole failed or wasn't applicable
+        if not fuel_calculated and typecode in OPENAP_TYPES:
             fuel_flow, total_fuel, mass_estimated, mass_source = estimate_fuel_openap_vectorized(traj_df, typecode)
             traj_df['fuel_flow'] = fuel_flow
             traj_df['fuel_source'] = 'openap'
-        else:
+            fuel_calculated = True
+            
+        if not fuel_calculated:
             traj_df['fuel_flow'] = np.nan
             traj_df['fuel_source'] = 'none'
         
@@ -605,8 +730,17 @@ def process_single_flight(args):
 
 def _init_worker():
     """Initialise les caches dans chaque worker."""
+    global _acropole_estimator, _openap_fuelflows, _openap_props
     import warnings
     warnings.filterwarnings('ignore')
+    warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
+    warnings.filterwarnings("ignore", category=DeprecationWarning, module="pkg_resources")
+    warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
+    
+    # Réinitialiser les caches pour ce worker
+    _acropole_estimator = None
+    _openap_fuelflows = {}
+    _openap_props = {}
 
 
 def save_flight_checkpoint(flight_id, features_list, checkpoint_dir):
@@ -620,17 +754,40 @@ def save_flight_checkpoint(flight_id, features_list, checkpoint_dir):
 
 def process_and_save(args_with_checkpoint):
     """Wrapper qui traite un vol et sauvegarde immédiatement."""
+    import signal
+    
+    class TimeoutError(Exception):
+        pass
+
+    def handler(signum, frame):
+        raise TimeoutError("Timeout reached")
+
     task, checkpoint_dir = args_with_checkpoint
     flight_id = task[0]
+    typecode = task[1]
     
-    # Traiter le vol
-    features_list = process_single_flight(task)
+    # Définir le timeout (120 secondes)
+    signal.signal(signal.SIGALRM, handler)
+    signal.alarm(120)
     
-    # Sauvegarder immédiatement
-    if features_list:
-        save_flight_checkpoint(flight_id, features_list, checkpoint_dir)
-    
-    return flight_id, len(features_list)
+    try:
+        # Traiter le vol
+        features_list = process_single_flight(task)
+        
+        # Désactiver l'alarme si fini à temps
+        signal.alarm(0)
+        
+        # Sauvegarder immédiatement
+        if features_list:
+            save_flight_checkpoint(flight_id, features_list, checkpoint_dir)
+        
+        return flight_id, len(features_list), None
+        
+    except TimeoutError:
+        return flight_id, 0, "TIMEOUT (120s)"
+    except Exception as e:
+        signal.alarm(0) # Désactiver l'alarme en cas d'erreur
+        return flight_id, 0, str(e)
 
 
 def get_completed_flights(checkpoint_dir):
@@ -692,9 +849,9 @@ def main():
     parser.add_argument('--flightlist', required=True, help='Fichier flightlist.parquet')
     parser.add_argument('--fuel', required=True, help='Fichier fuel_train.parquet ou fuel_rank_submission.parquet')
     parser.add_argument('--output', required=True, help='Fichier de sortie features.parquet')
-    parser.add_argument('--workers', type=int, default=8, help='Nombre de workers (défaut: 8)')
-    parser.add_argument('--no-parallel', action='store_true', help='Désactiver le multiprocessing')
-    parser.add_argument('--max-flights', type=int, default=None, help='Limite de vols (pour test)')
+    parser.add_argument('--workers', type=int, default=cpu_count(), help='Nombre de workers')
+    parser.add_argument('--no-parallel', action='store_true', help='Désactiver le parallélisme (debug)')
+    parser.add_argument('--max-flights', type=int, default=None, help='Limiter le nombre de vols (debug)')
     
     # Nouvelles options pour checkpoint/reprise
     parser.add_argument('--checkpoint-dir', default=None, 
@@ -702,7 +859,8 @@ def main():
     parser.add_argument('--resume', action='store_true',
                         help='Reprendre: skip les vols déjà dans checkpoint-dir')
     parser.add_argument('--concat-only', action='store_true',
-                        help='Ne pas traiter, juste concaténer les checkpoints existants')
+                        help='Uniquement concaténer les résultats existants')
+    parser.add_argument('--ignore-flights', type=str, default="", help='Liste des vols à ignorer (séparés par virgule)')
     
     args = parser.parse_args()
     
@@ -733,12 +891,13 @@ def main():
         return
     
     # --- Charger les métadonnées ---
-    print(f"\nChargement flightlist: {args.flightlist}")
+    t0 = datetime.now()
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Chargement flightlist: {args.flightlist}")
     flightlist = pd.read_parquet(args.flightlist)
     print(f"  Vols: {len(flightlist)}")
     print(f"  Colonnes: {flightlist.columns.tolist()}")
     
-    print(f"\nChargement fuel: {args.fuel}")
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Chargement fuel: {args.fuel}")
     fuel_df = pd.read_parquet(args.fuel)
     print(f"  Segments: {len(fuel_df)}")
     
@@ -748,10 +907,12 @@ def main():
     # --- Vérifier les vols déjà traités (mode resume) ---
     completed_flights = set()
     if args.resume:
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scan des checkpoints...")
         completed_flights = get_completed_flights(checkpoint_dir)
-        print(f"\nMode RESUME: {len(completed_flights)} vols déjà traités")
+        print(f"Mode RESUME: {len(completed_flights)} vols déjà traités")
     
     # --- Préparer les tâches ---
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Préparation des tâches...")
     trajectories_dir = Path(args.trajectories)
     
     # Grouper segments par vol
@@ -783,7 +944,7 @@ def main():
         
         tasks.append((flight_id, typecode, str(traj_file), segments, flight_info))
     
-    print(f"\nTâches préparées: {len(tasks)}")
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Tâches préparées: {len(tasks)}")
     print(f"Trajectoires manquantes: {missing_traj}")
     if args.resume:
         print(f"Vols skippés (déjà traités): {skipped_completed}")
@@ -824,23 +985,57 @@ def main():
     n_segments = 0
     
     try:
-        if args.no_parallel:
-            # Mode séquentiel (debug)
-            print("Mode séquentiel (--no-parallel)")
-            for task_cp in tqdm(tasks_with_checkpoint, desc="Vols"):
-                flight_id, n_seg = process_and_save(task_cp)
+        if args.no_parallel or args.workers <= 1:
+            # Mode séquentiel (debug ou stabilité maximale)
+            print(f"Mode séquentiel (Workers={args.workers}) - Stabilité maximale")
+            
+            # Initialiser l'environnement (important pour charger Acropole correctement)
+            _init_worker()
+            
+            for i, task_cp in enumerate(tqdm(tasks_with_checkpoint, desc="Vols (Seq)")):
+                flight_id = task_cp[0][0]
+                
+                # Ecrire le vol en cours pour le debug crash
+                with open("current_flight.txt", "w") as f:
+                    f.write(flight_id)
+                    f.flush()
+                    os.fsync(f.fileno())
+                
+                flight_id, n_seg, error = process_and_save(task_cp)
+                
                 n_processed += 1
                 n_segments += n_seg
+                
+                if error:
+                    errors.append(f"{flight_id}: {error}")
         else:
-            # Mode parallèle avec initialisation des workers
+            # Mode parallèle avec timeout par vol
+            from multiprocessing import TimeoutError as MPTimeoutError
+            
+            TIMEOUT_PER_FLIGHT = 120  # 2 minutes max par vol
+            
             with Pool(processes=args.workers, initializer=_init_worker) as pool:
-                for flight_id, n_seg in tqdm(
-                    pool.imap_unordered(process_and_save, tasks_with_checkpoint),
-                    total=len(tasks_with_checkpoint),
-                    desc="Vols"
-                ):
+                # Soumettre tous les jobs
+                # Utiliser imap_unordered pour une barre de progression réactive
+                # Cela permet de mettre à jour la barre dès qu'un vol est fini, peu importe l'ordre
+                results_iterator = pool.imap_unordered(process_and_save, tasks_with_checkpoint)
+                
+                for result in tqdm(results_iterator, total=len(tasks_with_checkpoint), desc="Vols"):
+                    flight_id, n_seg, error = result
                     n_processed += 1
                     n_segments += n_seg
+                    
+                    if error:
+                        errors.append(f"{flight_id}: {error}")
+                
+                pbar.close()
+                
+                if errors:
+                    print(f"\n⚠️  Erreurs sur {len(errors)} vols:")
+                    for err in errors[:10]:
+                        print(f"  - {err}")
+                    if len(errors) > 10:
+                        print(f"  ... et {len(errors) - 10} autres")
     
     except KeyboardInterrupt:
         print(f"\n\n⚠️  INTERRUPTION - {n_processed} vols traités")
@@ -887,6 +1082,57 @@ def main():
             print(f"  MAE: {mae:.1f} kg")
             print(f"  Biais: {bias:+.1f} kg")
     
+    # --- Correction de Biais ---
+    if 'fuel_kg' in features_df.columns and 'fuel_estimated_kg' in features_df.columns:
+        print("\nCalcul et application de la correction de biais...")
+        
+        # Calculer le biais moyen par type d'avion
+        # Biais = Réel - Estimé
+        features_df['bias_raw'] = features_df['fuel_kg'] - features_df['fuel_estimated_kg']
+        
+        bias_per_type = features_df.groupby('typecode')['bias_raw'].mean().to_dict()
+        
+        print("Facteurs de biais (kg):")
+        for tc, bias in bias_per_type.items():
+            print(f"  {tc}: {bias:+.1f}")
+            
+        # Appliquer la correction
+        # Estimé_Corrigé = Estimé + Biais_Moyen
+        features_df['fuel_estimated_corrected'] = features_df.apply(
+            lambda row: row['fuel_estimated_kg'] + bias_per_type.get(row['typecode'], 0),
+            axis=1
+        )
+        
+        # Sauvegarder les biais pour l'inférence future
+        bias_path = Path(args.output).parent / "bias_factors.pkl"
+        import pickle
+        with open(bias_path, 'wb') as f:
+            pickle.dump(bias_per_type, f)
+        print(f"Facteurs de biais sauvegardés: {bias_path}")
+        
+        # Recalculer les métriques avec la correction
+        valid = features_df.dropna(subset=['fuel_kg', 'fuel_estimated_corrected'])
+        if len(valid) > 0:
+            rmse = np.sqrt(((valid['fuel_kg'] - valid['fuel_estimated_corrected'])**2).mean())
+            mae = (valid['fuel_kg'] - valid['fuel_estimated_corrected']).abs().mean()
+            bias = (valid['fuel_estimated_corrected'] - valid['fuel_kg']).mean()
+            print(f"\nPerformance APRÈS correction:")
+            print(f"  RMSE: {rmse:.1f} kg")
+            print(f"  MAE: {mae:.1f} kg")
+            print(f"  Biais: {bias:+.1f} kg")
+            
+        # Remplacer la colonne originale ou garder les deux ?
+        # Pour l'instant on garde les deux pour comparaison, mais pour la soumission il faudra choisir
+        features_df['fuel_estimated_kg_raw'] = features_df['fuel_estimated_kg']
+        features_df['fuel_estimated_kg'] = features_df['fuel_estimated_corrected']
+        
+        # Nettoyage
+        features_df = features_df.drop(columns=['bias_raw', 'fuel_estimated_corrected'])
+        
+        # Sauvegarder à nouveau avec la correction
+        features_df.to_parquet(args.output, index=False)
+        print(f"Fichier mis à jour avec correction: {args.output}")
+
     print("\nAperçu:")
     print(features_df.head(10))
     
