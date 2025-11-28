@@ -65,7 +65,7 @@ python train_blend.py
 *   **Flight Phase Detection:** Uses OpenAP or a fallback heuristic to label phases (CLIMB, CRUISE, DESCENT).
 *   **Airspeed Calculation (TAS):**
     *   **Challenge:** Downloading historical weather data (GRIB files) to calculate True Airspeed from Ground Speed was too heavy (terabytes of data) and slow for the competition timeline.
-    *   **Solution:** We leverage **ACARS** messages embedded in the trajectory data. These messages often contain direct readings of TAS, Mach, or CAS (Calibrated Airspeed).
+    *   **Solution:** We leverage **ACARS** messages embedded in the trajectory data. Although sparse (often only ~10 points for thousands of ADS-B points), a single ACARS point allows us to identify wind trends and accurately estimate TAS for the entire flight.
     *   **Implementation:** We extract these sparse ACARS points and interpolate them to the rest of the trajectory, using altitude to convert Mach/CAS to TAS where necessary. This provides a "ground truth" airspeed without external weather dependencies.
 
 ### 2. Feature Engineering (`feature_engineering.py` & `data_utils.py`)
