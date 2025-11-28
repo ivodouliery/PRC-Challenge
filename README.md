@@ -13,7 +13,18 @@ This repository contains the complete pipeline to process flight data, generate 
 *   **Ensemble Learning:** Weighted blending of XGBoost, LightGBM, and CatBoost optimized via `scipy.minimize`.
 *   **Physics-Informed:** Includes an experimental mass estimator (`mass_estimator.py`) based on inverse flight dynamics.
 
-## 🛠️ Project Structure
+## � Libraries & Tools
+
+The project relies on a robust stack of Python libraries for data processing, modeling, and validation:
+
+*   **Data Processing:** `pandas`, `numpy`, `scipy` (optimization & interpolation).
+*   **Machine Learning:** `xgboost`, `lightgbm`, `catboost` (Gradient Boosting Ensemble), `scikit-learn` (metrics).
+*   **Optimization:** `optuna` (Hyperparameter tuning).
+*   **Aviation Physics:** `openap` (Drag, Thrust, Fuel Flow models).
+*   **Weather Validation:** `fastmeteo` (ERA5 data retrieval), `cdsapi`.
+*   **Visualization:** `matplotlib`, `seaborn`.
+
+## �🛠️ Project Structure
 
 ```
 ├── clean_trajectories.py    # Step 1: Cleans raw ADS-B trajectories (outliers, interpolation)
