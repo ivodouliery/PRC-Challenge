@@ -15,3 +15,5 @@ dataCleaning.ipynb
 analyze_features.py
 *.pkl
 *.parquet
+*.ipynb
+*.csv
