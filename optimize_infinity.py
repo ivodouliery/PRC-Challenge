@@ -37,29 +37,16 @@ N_FOLDS = 5
 # ==========================================
 # CHARGEMENT DONNÉES
 # ==========================================
+from data_utils import load_and_preprocess_data
+
+# ==========================================
+# CHARGEMENT DONNÉES
+# ==========================================
 def load_data():
-    # On recharge les données dans chaque processus pour éviter les soucis de mémoire partagée
-    if not os.path.exists(PATH_DATASET):
-        print(f"ERREUR: {PATH_DATASET} introuvable.")
-        sys.exit(1)
-    df = pd.read_parquet(PATH_DATASET)
-    
-    # Conversion explicite des colonnes catégorielles
-    cat_cols_names = ['aircraft_type', 'fuel_source', 'mass_source', 'origin_icao', 'destination_icao', 'phase', 'typecode']
-    for c in cat_cols_names:
-        if c in df.columns:
-            # Remplir les NaNs et forcer le type string avant conversion
-            df[c] = df[c].fillna('UNKNOWN').astype(str).astype('category')
-            
-    cols_exclude = ['flight_id', 'start', 'end', 'fuel_kg', 'flight_date', 'takeoff', 'landed', 'origin_name', 'destination_name', 'timestamp_start', 'timestamp_end']
-    features = [c for c in df.columns if c not in cols_exclude]
-    
-    X = df[features]
-    y = df['fuel_kg']
-    groups = df['flight_id']
-    
-    cat_cols = [c for c in X.columns if X[c].dtype.name == 'category']
-    return X, y, groups, cat_cols
+    # Wrapper pour garder la compatibilité avec le code existant
+    # On passe subsample_ratio=1.0 car l'optimisation "Infinity" se veut précise
+    # Mais on peut le changer ici si on veut aller vite
+    return load_and_preprocess_data(PATH_DATASET, is_train=True, subsample_ratio=1.0)[:4]
 
 # ==========================================
 # FONCTIONS OBJECTIVES (IDENTIQUES)
@@ -186,62 +173,68 @@ def run_worker_xgb():
     X, y, groups, _ = load_data()
     study = optuna.create_study(direction='minimize', study_name="xgb_night", storage=DB_XGB, load_if_exists=True)
     
-    while True:
+    while len(study.trials) < 50:
         try:
-            study.optimize(lambda t: objective_xgb(t, X, y, groups), n_trials=10) # Petits paquets
+            n_batch = 5
+            study.optimize(lambda t: objective_xgb(t, X, y, groups), n_trials=n_batch)
             
             # Sauvegarde régulière
             best = study.best_params.copy()
             best.update({'n_estimators': 5000, 'objective': 'reg:squarederror', 'n_jobs': -1, 'tree_method': 'hist', 'enable_categorical': True})
             if 'early_stopping_rounds' in best: del best['early_stopping_rounds']
             joblib.dump(best, "models/best_params_xgb_night.pkl")
-            print(f"[XGBoost] Best RMSE: {study.best_value:.4f}")
+            print(f"[XGBoost] Trials: {len(study.trials)}/50 - Best RMSE: {study.best_value:.4f}")
             
         except KeyboardInterrupt:
             break
         except Exception as e:
             print(f"[XGBoost Error] {e}")
             time.sleep(5)
+    print("[XGBoost] Terminé (50 itérations).")
 
 def run_worker_lgb():
     print("[LightGBM Worker] Démarré.")
     X, y, groups, _ = load_data()
     study = optuna.create_study(direction='minimize', study_name="lgb_night", storage=DB_LGB, load_if_exists=True)
     
-    while True:
+    while len(study.trials) < 50:
         try:
-            study.optimize(lambda t: objective_lgb(t, X, y, groups), n_trials=20)
+            n_batch = 5
+            study.optimize(lambda t: objective_lgb(t, X, y, groups), n_trials=n_batch)
             
             best = study.best_params.copy()
             best.update({'n_estimators': 5000, 'metric': 'rmse', 'n_jobs': -1, 'verbosity': -1})
             joblib.dump(best, "models/best_params_lgb_night.pkl")
-            print(f"[LightGBM] Best RMSE: {study.best_value:.4f}")
+            print(f"[LightGBM] Trials: {len(study.trials)}/50 - Best RMSE: {study.best_value:.4f}")
             
         except KeyboardInterrupt:
             break
         except Exception as e:
             print(f"[LightGBM Error] {e}")
             time.sleep(5)
+    print("[LightGBM] Terminé (50 itérations).")
 
 def run_worker_cat():
     print("[CatBoost Worker] Démarré.")
     X, y, groups, cat_cols = load_data()
     study = optuna.create_study(direction='minimize', study_name="cat_night", storage=DB_CAT, load_if_exists=True)
     
-    while True:
+    while len(study.trials) < 50:
         try:
-            study.optimize(lambda t: objective_cat(t, X, y, groups, cat_cols), n_trials=5)
+            n_batch = 5
+            study.optimize(lambda t: objective_cat(t, X, y, groups, cat_cols), n_trials=n_batch)
             
             best = study.best_params.copy()
             best.update({'iterations': 3000, 'loss_function': 'RMSE', 'verbose': 0, 'allow_writing_files': False})
             joblib.dump(best, "models/best_params_cat_night.pkl")
-            print(f"[CatBoost] Best RMSE: {study.best_value:.4f}")
+            print(f"[CatBoost] Trials: {len(study.trials)}/50 - Best RMSE: {study.best_value:.4f}")
             
         except KeyboardInterrupt:
             break
         except Exception as e:
             print(f"[CatBoost Error] {e}")
             time.sleep(5)
+    print("[CatBoost] Terminé (50 itérations).")
 
 # ==========================================
 # ORCHESTRATEUR
@@ -255,20 +248,20 @@ if __name__ == "__main__":
     # Création des processus
     p_xgb = multiprocessing.Process(target=run_worker_xgb)
     p_lgb = multiprocessing.Process(target=run_worker_lgb)
-    # p_cat = multiprocessing.Process(target=run_worker_cat)
+    p_cat = multiprocessing.Process(target=run_worker_cat)
 
     # Démarrage
     p_xgb.start()
     p_lgb.start()
-    # p_cat.start()
+    p_cat.start()
 
     try:
         p_xgb.join()
         p_lgb.join()
-        # p_cat.join()
+        p_cat.join()
     except KeyboardInterrupt:
         print("\n>>> ARRÊT DEMANDÉ <<<")
         p_xgb.terminate()
         p_lgb.terminate()
-        # p_cat.terminate()
+        p_cat.terminate()
         print("Processus arrêtés. Vos fichiers .pkl sont dans 'models/'.")
