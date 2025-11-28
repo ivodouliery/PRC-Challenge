@@ -63,7 +63,18 @@ python train_blend.py
 *   **Outlier Removal:** Filters points with unrealistic altitudes or speeds.
 *   **Interpolation:** Fills small gaps (up to 60s) in trajectory data to maintain continuity.
 
-![Trajectory Cleaning Example](/Users/ivodouliery/.gemini/antigravity/brain/b0d15d5c-8c6e-47a4-af6a-8af46d298d8e/cleaning_example.png)
+### 2. Validation with Weather Data (ERA5)
+To validate our TAS reconstruction, we compared it with TAS calculated using historical weather data (ERA5) fetched via `fastmeteo`.
+
+![TAS Validation with ERA5](weather_comparison.png)
+
+**Graph Explanation:**
+*   **Gray (Groundspeed):** Raw speed relative to the ground, highly variable due to wind.
+*   **Green (Reconstructed TAS):** Our calculated True Airspeed, stable and corrected for wind.
+*   **Blue (Weather Derived TAS):** TAS calculated using ERA5 wind data.
+*   **Red Points (ACARS):** Ground truth measurements from the aircraft.
+
+The strong correlation between our reconstructed TAS (Green) and the ERA5-derived TAS (Blue), and their alignment with ACARS points (Red), confirms the validity of our approach without needing heavy weather data in production.
 
 *   **Flight Phase Detection:** Uses OpenAP or a fallback heuristic to label phases (CLIMB, CRUISE, DESCENT).
 *   **Airspeed Calculation (TAS):**
