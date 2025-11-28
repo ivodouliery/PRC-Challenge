@@ -27,7 +27,7 @@ except RuntimeError:
 PATH_DATASET = "data/features_train.parquet"
 OUTPUT_FOLDER = "models"
 
-# Bases de données isolées (Crucial pour le multiprocessing)
+# Isolated databases (Critical for multiprocessing)
 DB_XGB = "sqlite:///optuna_xgb.db"
 DB_LGB = "sqlite:///optuna_lgb.db"
 DB_CAT = "sqlite:///optuna_cat.db"
@@ -35,27 +35,24 @@ DB_CAT = "sqlite:///optuna_cat.db"
 N_FOLDS = 5
 
 # ==========================================
-# CHARGEMENT DONNÉES
+# DATA LOADING
 # ==========================================
 from data_utils import load_and_preprocess_data
 
-# ==========================================
-# CHARGEMENT DONNÉES
-# ==========================================
 def load_data():
-    # Wrapper pour garder la compatibilité avec le code existant
-    # On passe subsample_ratio=1.0 car l'optimisation "Infinity" se veut précise
-    # Mais on peut le changer ici si on veut aller vite
+    # Wrapper to keep compatibility with existing code
+    # We pass subsample_ratio=1.0 because "Infinity" optimization aims for precision
+    # But it can be changed here for speed
     return load_and_preprocess_data(PATH_DATASET, is_train=True, subsample_ratio=1.0)[:4]
 
 # ==========================================
-# FONCTIONS OBJECTIVES (IDENTIQUES)
+# OBJECTIVE FUNCTIONS (IDENTICAL)
 # ==========================================
 def objective_xgb(trial, X, y, groups):
     params = {
         'n_estimators': 5000,
         'objective': 'reg:squarederror',
-        'n_jobs': 1, # Important: 1 coeur par modèle pour ne pas surcharger le CPU global
+        'n_jobs': 1, # Important: 1 core per model to avoid overloading global CPU
         'enable_categorical': True,
         'tree_method': 'hist',
         'early_stopping_rounds': 50,
@@ -74,7 +71,7 @@ def objective_xgb(trial, X, y, groups):
     kf = GroupKFold(n_splits=N_FOLDS)
     rmse_scores = []
     
-    # Callbacks silencieux
+    # Silent callbacks
     try:
         from optuna.integration import XGBoostPruningCallback
         pruning = XGBoostPruningCallback(trial, "validation_0-rmse")
@@ -132,7 +129,7 @@ def objective_cat(trial, X, y, groups, cat_cols):
         'iterations': 3000,
         'loss_function': 'RMSE',
         'task_type': 'CPU',
-        'thread_count': 2, # CatBoost gère bien un peu de multi-thread
+        'thread_count': 2, # CatBoost handles a bit of multi-threading well
         'verbose': False,
         'allow_writing_files': False,
         'early_stopping_rounds': 50,
@@ -165,11 +162,11 @@ def objective_cat(trial, X, y, groups, cat_cols):
     return np.mean(rmse_scores)
 
 # ==========================================
-# WORKERS (PROCESSUS INDÉPENDANTS)
+# WORKERS (INDEPENDENT PROCESSES)
 # ==========================================
 
 def run_worker_xgb():
-    print("[XGBoost Worker] Démarré.")
+    print("[XGBoost Worker] Started.")
     X, y, groups, _ = load_data()
     study = optuna.create_study(direction='minimize', study_name="xgb_night", storage=DB_XGB, load_if_exists=True)
     
@@ -178,7 +175,7 @@ def run_worker_xgb():
             n_batch = 5
             study.optimize(lambda t: objective_xgb(t, X, y, groups), n_trials=n_batch)
             
-            # Sauvegarde régulière
+            # Regular save
             best = study.best_params.copy()
             best.update({'n_estimators': 5000, 'objective': 'reg:squarederror', 'n_jobs': -1, 'tree_method': 'hist', 'enable_categorical': True})
             if 'early_stopping_rounds' in best: del best['early_stopping_rounds']
@@ -190,10 +187,10 @@ def run_worker_xgb():
         except Exception as e:
             print(f"[XGBoost Error] {e}")
             time.sleep(5)
-    print("[XGBoost] Terminé (50 itérations).")
+    print("[XGBoost] Finished (50 iterations).")
 
 def run_worker_lgb():
-    print("[LightGBM Worker] Démarré.")
+    print("[LightGBM Worker] Started.")
     X, y, groups, _ = load_data()
     study = optuna.create_study(direction='minimize', study_name="lgb_night", storage=DB_LGB, load_if_exists=True)
     
@@ -212,10 +209,10 @@ def run_worker_lgb():
         except Exception as e:
             print(f"[LightGBM Error] {e}")
             time.sleep(5)
-    print("[LightGBM] Terminé (50 itérations).")
+    print("[LightGBM] Finished (50 iterations).")
 
 def run_worker_cat():
-    print("[CatBoost Worker] Démarré.")
+    print("[CatBoost Worker] Started.")
     X, y, groups, cat_cols = load_data()
     study = optuna.create_study(direction='minimize', study_name="cat_night", storage=DB_CAT, load_if_exists=True)
     
@@ -234,23 +231,23 @@ def run_worker_cat():
         except Exception as e:
             print(f"[CatBoost Error] {e}")
             time.sleep(5)
-    print("[CatBoost] Terminé (50 itérations).")
+    print("[CatBoost] Finished (50 iterations).")
 
 # ==========================================
-# ORCHESTRATEUR
+# ORCHESTRATOR
 # ==========================================
 if __name__ == "__main__":
     if not os.path.exists(OUTPUT_FOLDER): os.makedirs(OUTPUT_FOLDER)
     
-    print(f">>> LANCEMENT DES 3 WORKERS EN PARALLÈLE <<<")
-    print("Pour arrêter : CTRL + C (Il faudra peut-être insister ou fermer le terminal)")
+    print(f">>> LAUNCHING 3 WORKERS IN PARALLEL <<<")
+    print("To stop: CTRL + C (You might need to insist or close the terminal)")
 
-    # Création des processus
+    # Process creation
     p_xgb = multiprocessing.Process(target=run_worker_xgb)
     p_lgb = multiprocessing.Process(target=run_worker_lgb)
     p_cat = multiprocessing.Process(target=run_worker_cat)
 
-    # Démarrage
+    # Start
     p_xgb.start()
     p_lgb.start()
     p_cat.start()
@@ -260,8 +257,8 @@ if __name__ == "__main__":
         p_lgb.join()
         p_cat.join()
     except KeyboardInterrupt:
-        print("\n>>> ARRÊT DEMANDÉ <<<")
+        print("\n>>> STOP REQUESTED <<<")
         p_xgb.terminate()
         p_lgb.terminate()
         p_cat.terminate()
-        print("Processus arrêtés. Vos fichiers .pkl sont dans 'models/'.")
+        print("Processes stopped. Your .pkl files are in 'models/'.")

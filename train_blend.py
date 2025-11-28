@@ -20,8 +20,8 @@ N_FOLDS = 5
 from data_utils import load_and_preprocess_data
 
 def load_data(path, is_train=True):
-    # On utilise le loader centralisé
-    # Pour le rank (is_train=False), le loader ne filtrera pas les outliers, ce qui est correct
+    # Use centralized loader
+    # For rank (is_train=False), the loader will not filter outliers, which is correct
     return load_and_preprocess_data(path, is_train=is_train, subsample_ratio=1.0)
 
 def train_and_predict_oof(model_type, params, X, y, groups, cat_cols):
@@ -29,7 +29,7 @@ def train_and_predict_oof(model_type, params, X, y, groups, cat_cols):
     oof_preds = np.zeros(len(X))
     models = []
     
-    print(f"Entraînement {model_type} (CV={N_FOLDS})...")
+    print(f"Training {model_type} (CV={N_FOLDS})...")
     
     for fold, (train_idx, val_idx) in enumerate(kf.split(X, y, groups=groups)):
         X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
@@ -49,7 +49,7 @@ def train_and_predict_oof(model_type, params, X, y, groups, cat_cols):
             
         oof_preds[val_idx] = model.predict(X_val)
         models.append(model)
-        print(f"  Fold {fold+1}/{N_FOLDS} terminé.")
+        print(f"  Fold {fold+1}/{N_FOLDS} done.")
         
     rmse = np.sqrt(mean_squared_error(y, oof_preds))
     print(f"  => RMSE OOF {model_type}: {rmse:.4f}")
@@ -80,11 +80,11 @@ def main():
         preds_dict['cat'], models_dict['cat'] = train_and_predict_oof('cat', params_cat, X_train, y_train, groups_train, cat_cols)
 
     if not preds_dict:
-        print("Aucun modèle trouvé ! Lancez l'optimisation d'abord.")
+        print("No models found! Run optimization first.")
         return
 
     # 3. Optimize Blending Weights
-    print("\nOptimisation du Blending...")
+    print("\nOptimizing Blending...")
     model_names = list(preds_dict.keys())
     X_blend = np.column_stack([preds_dict[m] for m in model_names])
     
@@ -96,11 +96,11 @@ def main():
     res = minimize(loss_func, init_weights, bounds=[(0,1)]*len(model_names), constraints={'type':'eq', 'fun': lambda w: np.sum(w)-1})
     
     best_weights = res.x
-    print(f"Poids optimaux : {dict(zip(model_names, best_weights))}")
-    print(f"RMSE Blending : {res.fun:.4f}")
+    print(f"Optimal weights: {dict(zip(model_names, best_weights))}")
+    print(f"Blending RMSE: {res.fun:.4f}")
     
     # 4. Predict on Rank
-    print("\nPrédiction sur Rank...")
+    print("\nPredicting on Rank...")
     final_preds_rank = np.zeros(len(X_rank))
     
     for i, m_name in enumerate(model_names):
@@ -118,20 +118,20 @@ def main():
         final_preds_rank += model_preds * weight
         
     # 5. Submission
-    print("\nGénération de la soumission...")
+    print("\nGenerating submission...")
     
-    # Créer un DF avec les prédictions
+    # Create DF with predictions
     df_preds = pd.DataFrame({
         'flight_id': df_rank['flight_id'],
         'idx': df_rank['idx'],
         'fuel_kg': final_preds_rank
     })
     
-    # Charger le template de soumission pour être sûr de l'ordre
+    # Load submission template to ensure order
     submission_template = pd.read_parquet("prc_data/fuel_rank_submission.parquet")
     
-    # Fusionner (au cas où l'ordre serait différent)
-    # On garde start et end du template
+    # Merge (in case order is different)
+    # Keep start and end from template
     final_submission = pd.merge(
         submission_template[['flight_id', 'idx', 'start', 'end']], 
         df_preds, 
@@ -139,15 +139,15 @@ def main():
         how='left'
     )
     
-    # Remplir les manquants éventuels (ne devrait pas arriver)
+    # Fill potential missing values (should not happen)
     n_missing = final_submission['fuel_kg'].isna().sum()
     if n_missing > 0:
-        print(f"⚠️ ATTENTION : {n_missing} segments manquants dans les prédictions !")
+        print(f"⚠️ WARNING: {n_missing} missing segments in predictions!")
         final_submission['fuel_kg'] = final_submission['fuel_kg'].fillna(0)
     
-    # Sauvegarder en Parquet
+    # Save as Parquet
     final_submission.to_parquet("submission.parquet", index=False)
-    print(f"Submission générée : submission.parquet ({len(final_submission)} lignes)")
+    print(f"Submission generated: submission.parquet ({len(final_submission)} rows)")
 
 if __name__ == "__main__":
     main()
