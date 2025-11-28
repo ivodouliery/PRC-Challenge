@@ -66,13 +66,41 @@ python train_blend.py
 *   **Airspeed Calculation:** Derives True Airspeed (TAS) and Mach number from ground speed and altitude if not available.
 
 ### 2. Feature Engineering (`feature_engineering.py` & `data_utils.py`)
-*   **Spatial:** Distance flown, track changes.
-*   **Temporal:** Duration, time since takeoff.
-*   **Dynamics:** Vertical rate, ground speed, altitude (Mean/Min/Max/Std).
-*   **Context (Lag/Lead):**
-    *   `prev_alt_mean`, `prev_vrate_mean`: Captures the state of the aircraft in the previous segment.
-    *   `next_phase`: Anticipates the next flight phase (e.g., transition from Cruise to Descent).
-*   **Physics-Based:** Estimates fuel flow using OpenAP and Acropole models as baseline features.
+
+The pipeline generates a rich set of features for each flight segment:
+
+#### A. Temporal Features
+*   `duration_sec`: Duration of the segment in seconds.
+*   `time_since_takeoff`: Cumulative duration from the start of the flight to the current segment.
+*   `is_missing_data`: Flag indicating if the segment was originally empty (ghost segment) and reconstructed.
+
+#### B. Spatial Features
+*   `distance_km`: Total distance flown within the segment (sum of haversine distances between points).
+*   `distance_direct_km`: Direct Great Circle distance between the start and end of the segment.
+*   `dist_flown`: Cumulative distance flown since takeoff.
+*   `track_change_total`: Sum of heading changes (absolute difference) within the segment, capturing turns.
+
+#### C. Flight Dynamics (Aggregated)
+For each segment, we compute statistics (Mean, Min, Max, Std) for:
+*   `altitude`: Barometric altitude.
+*   `groundspeed`: Speed relative to the ground.
+*   `vertical_rate`: Rate of climb or descent.
+*   `true_airspeed` (TAS): Calculated from ground speed and wind (if available) or approximated.
+*   `mach_number`: Ratio of TAS to the speed of sound at that altitude.
+
+#### D. Contextual Features (Lag/Lead)
+To capture the sequential nature of flight, we add context from neighboring segments:
+*   `prev_[feature]`: Value of the feature (e.g., `alt_mean`, `vrate_mean`) in the *previous* segment.
+*   `next_phase`: The flight phase of the *next* segment (anticipation).
+
+#### E. Physics-Based Features
+*   **Mass Estimation:** 
+    *   Uses `mass_estimator.py` to solve the inverse flight dynamics problem (finding the initial mass that minimizes fuel error on training data).
+    *   Fallback: 85% of MTOW (Maximum Takeoff Weight) if the model is unavailable.
+*   **Fuel Flow Models:**
+    *   `fuel_flow_acropole`: Estimated fuel flow using the Acropole model (for supported Airbus/Boeing aircraft).
+    *   `fuel_flow_openap`: Estimated fuel flow using the OpenAP library (fallback for other types).
+    *   `fuel_estimated_kg`: Integrated fuel consumption over the segment duration.
 
 ### 3. Modeling Strategy (`optimize_infinity.py` & `train_blend.py`)
 We use an ensemble of three gradient boosting libraries to maximize performance and diversity:
@@ -103,5 +131,4 @@ Processing large datasets can be unstable due to memory leaks or specific corrup
 | **Ensemble** | **~224.0** |
 
 ## 🔮 Future Work (V2)
-*   **Mass Estimation:** Integrate `mass_estimator.py` to estimate initial aircraft mass, which is a critical factor for fuel consumption.
 *   **Weather Integration:** Incorporate wind and temperature data using `fastmeteo` to improve ground speed and fuel flow calculations.
